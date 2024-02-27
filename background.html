@@ -1,0 +1,13 @@
+<script>
+    function fifty() {
+      let then = performance.now() + 50;
+      while (performance.now() < then) {
+        // we do work for 50 ms
+      }
+  
+      // the schedule ourselves for more work in 50 ms.
+      setTimeout(fifty, 50);
+    }
+  
+    fifty();
+</script>
