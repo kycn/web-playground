@@ -9,6 +9,7 @@
   body { font: 15px/1.4 system-ui, sans-serif; margin: 16px; }
   fieldset { margin-bottom: 12px; }
   label { display: block; margin: 4px 0; }
+  button { margin: 4px 4px 4px 0; }
   textarea { width: 100%; height: 60px; }
   #stats { white-space: pre; font-family: monospace; background: #f3f3f3; padding: 8px; }
   #log { white-space: pre; font-family: monospace; font-size: 12px; max-height: 40vh; overflow: auto;
@@ -26,8 +27,10 @@
   <label><input type="checkbox" id="optScroll" checked> scroll position</label>
   <label><input type="checkbox" id="optForm" checked> form data (textarea + input event)</label>
   <label>Interval (ms): <input type="number" id="interval" value="200" min="10" step="10"></label>
+  <label><input type="checkbox" id="optAwake"> Keep page awake while in background (plays a quiet tone with Web Audio)</label>
   <button id="start">Start</button>
   <button id="stop">Stop</button>
+  <button id="once">Change once</button>
   <button id="reset">Reset stats</button>
 </fieldset>
 
@@ -36,7 +39,7 @@
 <h2>Stats</h2>
 <div id="stats"></div>
 
-<h2>Log</h2>
+<h2>Log (newest first, local time)</h2>
 <div id="log"></div>
 
 <div id="spacer"></div>
@@ -48,6 +51,7 @@ const STORE_KEY = "session-state-generator";
 let timer = null;
 let tick = 0;
 let lastTick = 0;
+let audio = null;
 let stats = loadStats();
 
 function newStats() {
@@ -63,13 +67,16 @@ function saveStats() {
   localStorage.setItem(STORE_KEY, JSON.stringify(stats));
 }
 
+// Local wall-clock time with milliseconds, to line up with logcat timestamps.
 function now() {
-  return new Date().toISOString().slice(11, 23);
+  const d = new Date();
+  const pad = (n, w = 2) => String(n).padStart(w, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
 function log(message) {
   stats.events.push(`${now()} ${message}`);
-  if (stats.events.length > 300) stats.events.shift();
+  if (stats.events.length > 500) stats.events.shift();
   saveStats();
   render();
 }
@@ -81,24 +88,13 @@ function render() {
     `max gap (visible):    ${Math.round(stats.maxGapVisible)} ms\n` +
     `max gap (hidden):     ${Math.round(stats.maxGapHidden)} ms\n` +
     `requested interval:   ${$("interval").value} ms\n` +
+    `keep awake (audio):   ${audio ? audio.state : "off"}\n` +
     `state:                ${document.hidden ? "hidden" : "visible"}`;
   $("log").textContent = stats.events.slice().reverse().join("\n");
 }
 
-function step() {
-  const t = performance.now();
-  const gap = lastTick ? t - lastTick : 0;
-  lastTick = t;
+function change() {
   tick++;
-  stats.ticks++;
-
-  if (document.hidden) {
-    stats.hiddenTicks++;
-    stats.maxGapHidden = Math.max(stats.maxGapHidden, gap);
-  } else {
-    stats.maxGapVisible = Math.max(stats.maxGapVisible, gap);
-  }
-
   if ($("optReplace").checked) {
     history.replaceState({ tick }, "", `#replace-${tick}`);
   }
@@ -113,18 +109,52 @@ function step() {
     field.value = `typed at tick ${tick} (${now()})`;
     field.dispatchEvent(new Event("input", { bubbles: true }));
   }
+}
 
-  // Keep the log readable: one line per second while visible, every tick while hidden.
-  if (document.hidden || tick % Math.max(1, Math.round(1000 / $("interval").value)) === 0) {
-    log(`tick ${tick} gap=${Math.round(gap)}ms${document.hidden ? " (hidden)" : ""}`);
+function step() {
+  const t = performance.now();
+  const gap = lastTick ? t - lastTick : 0;
+  lastTick = t;
+  stats.ticks++;
+
+  if (document.hidden) {
+    stats.hiddenTicks++;
+    stats.maxGapHidden = Math.max(stats.maxGapHidden, gap);
   } else {
-    saveStats();
-    render();
+    stats.maxGapVisible = Math.max(stats.maxGapVisible, gap);
+  }
+
+  change();
+  // Every tick is logged, so the last change before suspension can be lined up with logcat.
+  log(`tick ${tick} gap=${Math.round(gap)}ms${document.hidden ? " (hidden)" : ""}`);
+}
+
+function startAudio() {
+  if (!$("optAwake").checked || audio) {
+    return;
+  }
+  audio = new AudioContext();
+  const oscillator = audio.createOscillator();
+  const gain = audio.createGain();
+  oscillator.frequency.value = 440;
+  gain.gain.value = 0.01;
+  oscillator.connect(gain).connect(audio.destination);
+  oscillator.start();
+  audio.onstatechange = () => log(`audio context ${audio.state}`);
+  log("audio started (keeps the page awake)");
+}
+
+function stopAudio() {
+  if (audio) {
+    audio.close();
+    audio = null;
+    log("audio stopped");
   }
 }
 
 function start() {
   stop();
+  startAudio();
   lastTick = 0;
   const interval = Math.max(10, Number($("interval").value) || 200);
   timer = setInterval(step, interval);
@@ -137,6 +167,7 @@ function stop() {
     timer = null;
     log("stopped");
   }
+  stopAudio();
 }
 
 document.addEventListener("visibilitychange", () => {
@@ -151,9 +182,9 @@ document.addEventListener("visibilitychange", () => {
 
 $("start").onclick = start;
 $("stop").onclick = stop;
+$("once").onclick = () => { change(); log(`changed once (tick ${tick})`); };
 $("reset").onclick = () => { stats = newStats(); saveStats(); render(); };
 render();
 </script>
 </body>
 </html>
-
