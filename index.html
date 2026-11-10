@@ -1,1 +1,159 @@
-<a href="background.html">background</a>
+<!-- <a href="background.html">background</a> -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session state update generator</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 16px; }
+  fieldset { margin-bottom: 12px; }
+  label { display: block; margin: 4px 0; }
+  textarea { width: 100%; height: 60px; }
+  #stats { white-space: pre; font-family: monospace; background: #f3f3f3; padding: 8px; }
+  #log { white-space: pre; font-family: monospace; font-size: 12px; max-height: 40vh; overflow: auto;
+         background: #fafafa; border: 1px solid #ddd; padding: 6px; }
+  #spacer { height: 3000px; background: linear-gradient(#fff, #cde); }
+</style>
+</head>
+<body>
+<h1>Session state update generator</h1>
+
+<fieldset>
+  <legend>What to change</legend>
+  <label><input type="checkbox" id="optReplace" checked> history.replaceState</label>
+  <label><input type="checkbox" id="optPush"> history.pushState (adds history entries)</label>
+  <label><input type="checkbox" id="optScroll" checked> scroll position</label>
+  <label><input type="checkbox" id="optForm" checked> form data (textarea + input event)</label>
+  <label>Interval (ms): <input type="number" id="interval" value="200" min="10" step="10"></label>
+  <button id="start">Start</button>
+  <button id="stop">Stop</button>
+  <button id="reset">Reset stats</button>
+</fieldset>
+
+<textarea id="field" placeholder="Changed automatically"></textarea>
+
+<h2>Stats</h2>
+<div id="stats"></div>
+
+<h2>Log</h2>
+<div id="log"></div>
+
+<div id="spacer"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const STORE_KEY = "session-state-generator";
+
+let timer = null;
+let tick = 0;
+let lastTick = 0;
+let stats = loadStats();
+
+function newStats() {
+  return { ticks: 0, hiddenTicks: 0, maxGapVisible: 0, maxGapHidden: 0, hiddenAt: null, events: [] };
+}
+
+function loadStats() {
+  try { return JSON.parse(localStorage.getItem(STORE_KEY)) || newStats(); }
+  catch (e) { return newStats(); }
+}
+
+function saveStats() {
+  localStorage.setItem(STORE_KEY, JSON.stringify(stats));
+}
+
+function now() {
+  return new Date().toISOString().slice(11, 23);
+}
+
+function log(message) {
+  stats.events.push(`${now()} ${message}`);
+  if (stats.events.length > 300) stats.events.shift();
+  saveStats();
+  render();
+}
+
+function render() {
+  $("stats").textContent =
+    `ticks total:          ${stats.ticks}\n` +
+    `ticks while hidden:   ${stats.hiddenTicks}\n` +
+    `max gap (visible):    ${Math.round(stats.maxGapVisible)} ms\n` +
+    `max gap (hidden):     ${Math.round(stats.maxGapHidden)} ms\n` +
+    `requested interval:   ${$("interval").value} ms\n` +
+    `state:                ${document.hidden ? "hidden" : "visible"}`;
+  $("log").textContent = stats.events.slice().reverse().join("\n");
+}
+
+function step() {
+  const t = performance.now();
+  const gap = lastTick ? t - lastTick : 0;
+  lastTick = t;
+  tick++;
+  stats.ticks++;
+
+  if (document.hidden) {
+    stats.hiddenTicks++;
+    stats.maxGapHidden = Math.max(stats.maxGapHidden, gap);
+  } else {
+    stats.maxGapVisible = Math.max(stats.maxGapVisible, gap);
+  }
+
+  if ($("optReplace").checked) {
+    history.replaceState({ tick }, "", `#replace-${tick}`);
+  }
+  if ($("optPush").checked) {
+    history.pushState({ tick }, "", `#push-${tick}`);
+  }
+  if ($("optScroll").checked) {
+    window.scrollTo(0, tick % 2 ? 1500 : 200);
+  }
+  if ($("optForm").checked) {
+    const field = $("field");
+    field.value = `typed at tick ${tick} (${now()})`;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  // Keep the log readable: one line per second while visible, every tick while hidden.
+  if (document.hidden || tick % Math.max(1, Math.round(1000 / $("interval").value)) === 0) {
+    log(`tick ${tick} gap=${Math.round(gap)}ms${document.hidden ? " (hidden)" : ""}`);
+  } else {
+    saveStats();
+    render();
+  }
+}
+
+function start() {
+  stop();
+  lastTick = 0;
+  const interval = Math.max(10, Number($("interval").value) || 200);
+  timer = setInterval(step, interval);
+  log(`started, interval=${interval}ms`);
+}
+
+function stop() {
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+    log("stopped");
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stats.hiddenAt = Date.now();
+    log("page hidden");
+  } else {
+    const hiddenFor = stats.hiddenAt ? Date.now() - stats.hiddenAt : 0;
+    log(`page visible again after ${hiddenFor} ms`);
+  }
+});
+
+$("start").onclick = start;
+$("stop").onclick = stop;
+$("reset").onclick = () => { stats = newStats(); saveStats(); render(); };
+render();
+</script>
+</body>
+</html>
+
